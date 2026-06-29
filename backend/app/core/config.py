@@ -18,11 +18,10 @@ class Settings(BaseSettings):
     supabase_service_role_key: str = ""
     supabase_jwt_secret: str = ""
 
-    # ---- Anthropic ----
-    anthropic_api_key: str = ""
-    anthropic_model: str = "claude-opus-4-8"
-    anthropic_max_tokens: int = 4096
-    anthropic_inference_geo: str = ""  # "eu" to pin EU inference (Opus 4.6+)
+    # ---- Gemini ----
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.0-flash"
+    gemini_max_tokens: int = 4096
 
     # ---- Embeddings ----
     embeddings_provider: str = "managed"  # managed | fake | selfhosted
