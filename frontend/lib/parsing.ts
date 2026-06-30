@@ -2,7 +2,6 @@
 // route handler, no Python backend). PDF → page-aware chunks (so citations can
 // reference a page); DOCX/XLSX → page-less chunks.
 
-import { WebPDFLoader } from "@langchain/community/document_loaders/web/pdf";
 import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
 import mammoth from "mammoth";
 import * as XLSX from "xlsx";
@@ -47,15 +46,24 @@ export async function extractChunks(file: File): Promise<Chunk[]> {
 }
 
 async function chunkPdf(file: File): Promise<Chunk[]> {
-  const loader = new WebPDFLoader(file, { splitPages: true });
-  const docs = await loader.load();
+  // Dynamic import so Next.js doesn't bundle pdfjs-dist (serverExternalPackages).
+  // GlobalWorkerOptions.workerSrc = "" disables the web-worker (not needed in Node.js).
+  const { getDocument, GlobalWorkerOptions } = await import("pdfjs-dist");
+  GlobalWorkerOptions.workerSrc = "";
+
+  const buffer = await file.arrayBuffer();
+  const pdf = await getDocument({ data: buffer }).promise;
   const out: Chunk[] = [];
-  for (const doc of docs) {
-    const meta = doc.metadata as { loc?: { pageNumber?: number } };
-    const page = typeof meta?.loc?.pageNumber === "number" ? meta.loc.pageNumber : null;
-    for (const piece of await splitter.splitText(doc.pageContent)) {
+
+  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+    const page = await pdf.getPage(pageNum);
+    const tc = await page.getTextContent();
+    const text = (tc.items as Array<{ str?: string }>)
+      .map((it) => it.str ?? "")
+      .join(" ");
+    for (const piece of await splitter.splitText(text)) {
       const content = piece.trim();
-      if (content) out.push({ content, page });
+      if (content) out.push({ content, page: pageNum });
     }
   }
   return out;
