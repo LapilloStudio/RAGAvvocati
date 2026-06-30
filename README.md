@@ -2,106 +2,114 @@
 
 A secure, GDPR-first Retrieval-Augmented Generation SaaS for law and tax/accounting
 firms. The commercial differentiators are **hard tenant isolation**, **encryption at
-rest and in transit**, a **No-Training / zero-retention** AI layer, and **strict
-citations** on every answer.
+rest and in transit**, and **citations** on every answer.
 
-> Status: initial scaffold. The architecture, multi-tenant schema, and the core
-> ingestion/query pipelines are in place with tenant isolation built in from line one.
-> The pipelines are deliberately stubbed (clearly marked `TODO`) — not production-complete.
+Single Next.js app — the whole RAG pipeline (PDF/DOCX/XLSX parsing, embeddings,
+retrieval, generation) runs in TypeScript inside the App Router API routes. No separate
+backend service: it deploys to **Vercel** as one app, talking to **Supabase**.
 
 ## Architecture
 
-Decoupled, built around Supabase as the managed data/auth/storage platform.
-
 ```
-┌──────────────┐     access token (JWT w/ tenant_id)    ┌──────────────────┐
-│  Next.js UI  │ ─────────────────────────────────────► │  FastAPI backend │
-│ (Supabase    │                                         │  (RAG pipeline)  │
-│  Auth)       │ ◄───────── streamed answer + citations ─┤                  │
-└──────┬───────┘                                         └────────┬─────────┘
-       │ supabase-js (RLS-protected reads)                        │ supabase-py
-       ▼                                                          ▼  (under user JWT → RLS)
-┌─────────────────────────────────────────────────────────────────────────┐
-│  Supabase: Postgres 15 + pgvector · Auth · Storage   (EU region, AES-256) │
-│  Row-Level Security enforces  tenant_id = current_tenant_id()  on every    │
-│  row, plus the match_document_chunks() vector-search RPC.                  │
-└─────────────────────────────────────────────────────────────────────────┘
-                        │ generation (no-training / ZDR)
-                        ▼
-                 Anthropic Claude (claude-opus-4-8) + native Citations
+┌─────────────────────────────────────────────────────────────────┐
+│  Next.js app on Vercel                                           │
+│  ┌───────────────┐   same-origin fetch (session cookie)          │
+│  │  UI (login,   │ ──────────────► /api/documents  (ingest/list) │
+│  │  upload, chat)│ ──────────────► /api/chat        (RAG answer)  │
+│  └───────────────┘         route handlers run under the USER JWT  │
+└───────────────────────────────────┬─────────────────────────────┘
+        │ supabase-js (user JWT → RLS applies on every call)
+        ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Supabase: Postgres 15 + pgvector · Auth · Storage  (EU, AES-256)│
+│  RLS enforces  tenant_id = current_tenant_id()  on every row,    │
+│  plus the match_document_chunks() vector-search RPC.             │
+└─────────────────────────────────────────────────────────────────┘
+        │ embeddings + generation
+        ▼
+   Google Gemini — text-embedding-004 (768d) + gemini-2.5-flash
 ```
 
 | Layer | Technology |
 |---|---|
-| Backend | Python 3.12 · FastAPI · uvicorn |
-| Frontend | Next.js (App Router) · React · TypeScript · Tailwind |
+| App | Next.js (App Router) · React · TypeScript · Tailwind |
+| RAG pipeline | LangChain JS (WebPDFLoader, text splitters) · mammoth (DOCX) · xlsx (XLSX) |
 | Data / Vector / Auth / Storage | Supabase (Postgres 15 + pgvector, Auth, Storage) |
-| LLM (generation) | Anthropic Claude `claude-opus-4-8` + Citations |
-| Embeddings | Pluggable `EmbeddingProvider` (default: managed multilingual) |
+| Embeddings + LLM | Google Gemini (`text-embedding-004`, `gemini-2.5-flash`) |
 
 ## Tenant isolation (the core invariant)
 
-Enforced at three layers so a single mistake can't leak data across firms:
+Enforced at the **database engine** so a bug in app code can't leak data across firms:
 
 1. **JWT claim** — a Supabase access-token hook stamps `tenant_id` into every user's JWT.
-2. **RLS at the database engine** — every tenant table has a policy
-   `USING (tenant_id = public.current_tenant_id())`; the vector-search RPC is
-   `SECURITY INVOKER` so retrieval is RLS-scoped automatically.
-3. **Application layer** — a `TenantContext` is threaded through every service, the
-   backend queries Postgres *under the caller's JWT* (so RLS applies), and every write
-   is tagged with the context `tenant_id` — never client input.
+2. **RLS** — every tenant table has `USING (tenant_id = public.current_tenant_id())`; the
+   vector-search RPC is `SECURITY INVOKER`, so retrieval is RLS-scoped automatically.
+3. **Per-request user client** — every route handler talks to Postgres *under the caller's
+   JWT* (session cookie), so RLS applies to reads and writes alike, and each write is
+   tagged with the `tenant_id` from the JWT — never client input.
 
-See `supabase/migrations/0001_init.sql` and `backend/app/core/security.py`.
+See `supabase/migrations/0001_init.sql` and `frontend/lib/supabase/server.ts`.
 
 ## Repository layout
 
 ```
 supabase/          # schema, RLS, RPC, storage policies, auth hook (source of truth)
-backend/           # FastAPI RAG pipeline (ingestion + query)
-frontend/          # Next.js UI (auth, upload, chat with citations)
-.github/workflows/ # CI
+frontend/          # the Next.js app (UI + /api RAG pipeline) — deploy root on Vercel
+.github/workflows/ # CI (typecheck + lint + build)
 ```
 
-## Quick start
+## Quick start (local)
 
-### 1. Data platform (Supabase, local)
+### 1. Supabase
 
-```bash
-# install the Supabase CLI: https://supabase.com/docs/guides/cli
-supabase start          # boots Postgres+pgvector+Auth+Storage, applies migrations
-```
-Note the printed `API URL`, `anon key`, `service_role key`, and `JWT secret`.
-For production, create a project in an **EU region** for GDPR data residency.
+Create a project in an **EU region** (GDPR). Then, in the SQL Editor, run in order:
 
-### 2. Backend
+1. `supabase/migrations/0001_init.sql` — schema, RLS, RPC, storage, auth hook.
+2. `supabase/migrations/0002_seed.sql` — two demo firms (Alpha, Beta).
 
-```bash
-cd backend
-cp .env.example .env     # fill in Supabase + Anthropic + embeddings keys
-pip install -e ".[dev]"
-uvicorn app.main:app --reload      # http://localhost:8000  (docs at /docs)
-pytest                              # runs the tenant-isolation gate
-```
+Enable the auth hook: **Authentication → Hooks → Customize Access Token** → select
+`custom_access_token_hook`. Create your user under **Authentication → Users**, then run:
 
-### 3. Frontend
+3. `supabase/migrations/0003_bootstrap_profiles.sql` — attaches users without a profile
+   to *Studio Legale Alpha* (first user becomes `admin`).
+
+Copy from **Project Settings → API**: Project URL and the `anon` key.
+
+### 2. App
 
 ```bash
 cd frontend
-cp .env.local.example .env.local   # Supabase URL + anon key + backend URL
+cp .env.local.example .env.local   # fill in the values below
 npm install
 npm run dev                         # http://localhost:3000
 ```
 
+`.env.local`:
+
+```
+NEXT_PUBLIC_SUPABASE_URL=https://YOUR-PROJECT.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=ey...
+GOOGLE_API_KEY=AIza...              # https://aistudio.google.com/app/apikey
+```
+
+Log in, upload a PDF, ask a question → you get a Gemini answer with source citations
+(filename + page). A second user on a different tenant never sees the first firm's docs.
+
+## Deploy (Vercel)
+
+One Vercel project, **Root Directory = `frontend`**. Set the three env vars above in
+Project Settings → Environment Variables. Push → Vercel builds and serves the whole app.
+On **Vercel Pro** the function timeout (60s, up to 300s) covers synchronous ingestion of
+large PDFs.
+
 ## Security & compliance notes
 
-- **At rest / in transit:** Supabase encrypts data at rest (AES-256) and serves over
-  TLS. Original files live in a **private** Storage bucket with per-tenant policies.
-- **No-Training:** the Anthropic API does not train on API traffic by default. Enable
-  **Zero Data Retention** at the org level; set `ANTHROPIC_INFERENCE_GEO=eu` to pin
-  inference to the EU.
-- **Citations:** answers use Claude's native Citations — every claim carries the source
-  filename and page, returned to the UI for professional verification.
-- **Secrets** live only in `.env` files (git-ignored) / your secret manager.
+- **At rest / in transit:** Supabase encrypts at rest (AES-256) and serves over TLS.
+  Original files live in a **private** Storage bucket with per-tenant policies.
+- **No-Training:** Gemini API content is not used to train models when accessed via a
+  paid Google AI Studio / Vertex key. Use an EU-resident project for data residency.
+- **Citations:** every answer references the source filename and page for verification.
+- **Secrets** live only in `.env.local` (git-ignored) and the Vercel dashboard.
 
 ## License
 

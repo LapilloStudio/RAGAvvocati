@@ -6,8 +6,8 @@
 --   insert into public.profiles (id, tenant_id, role, full_name)
 --   values ('<auth-user-uuid>', '11111111-1111-1111-1111-111111111111', 'admin', 'Mario Rossi');
 --
--- The integration test (backend/tests/test_tenant_isolation.py) seeds its own
--- tenants/chunks and does not depend on this file.
+-- Or run 0003_bootstrap_profiles.sql to attach every user without a profile to
+-- Studio Legale Alpha automatically.
 -- =============================================================================
 
 insert into public.tenants (id, name) values

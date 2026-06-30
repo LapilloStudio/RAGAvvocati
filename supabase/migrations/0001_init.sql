@@ -77,7 +77,7 @@ create table public.document_chunks (
   content       text not null,
   page          int,                      -- source page for citations (nullable)
   metadata      jsonb not null default '{}'::jsonb,
-  embedding     vector(1536),             -- MUST match EMBEDDINGS_DIMENSION
+  embedding     vector(768),              -- Gemini text-embedding-004 → 768 dims
   created_at    timestamptz not null default now()
 );
 create index document_chunks_tenant_id_idx on public.document_chunks (tenant_id);
@@ -161,7 +161,7 @@ create policy chat_messages_isolation on public.chat_messages
 -- defense-in-depth so the function is safe even if called with elevated rights.
 -- =============================================================================
 create or replace function public.match_document_chunks(
-  query_embedding vector(1536),
+  query_embedding vector(768),
   match_count     int default 8,
   filter_document_id uuid default null
 )

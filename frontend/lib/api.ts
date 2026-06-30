@@ -1,8 +1,8 @@
 "use client";
 
-import { createClient } from "@/lib/supabase/client";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+// Calls the app's own Next.js API routes (same-origin). The Supabase session
+// travels automatically via cookies, so no Authorization header is needed and
+// there is no external backend URL.
 
 export interface Citation {
   document_id: string | null;
@@ -26,14 +26,14 @@ export interface DocumentOut {
   created_at: string | null;
 }
 
-/** Attach the current user's Supabase access token so the backend can verify tenant. */
-async function authHeaders(): Promise<HeadersInit> {
-  const supabase = createClient();
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-  if (!session) throw new Error("Not authenticated");
-  return { Authorization: `Bearer ${session.access_token}` };
+async function errorMessage(res: Response, fallback: string): Promise<string> {
+  try {
+    const body = await res.json();
+    if (body && typeof body.error === "string") return body.error;
+  } catch {
+    // no JSON body
+  }
+  return `${fallback}: ${res.status}`;
 }
 
 export async function sendChat(
@@ -41,30 +41,24 @@ export async function sendChat(
   sessionId?: string,
   documentId?: string,
 ): Promise<ChatResponse> {
-  const res = await fetch(`${API_BASE}/api/v1/chat`, {
+  const res = await fetch("/api/chat", {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ message, session_id: sessionId, document_id: documentId }),
   });
-  if (!res.ok) throw new Error(`Chat failed: ${res.status}`);
+  if (!res.ok) throw new Error(await errorMessage(res, "Chat fallita"));
   return res.json();
 }
 
 export async function uploadDocument(file: File): Promise<void> {
   const form = new FormData();
   form.append("file", file);
-  const res = await fetch(`${API_BASE}/api/v1/documents`, {
-    method: "POST",
-    headers: await authHeaders(),
-    body: form,
-  });
-  if (!res.ok) throw new Error(`Upload failed: ${res.status}`);
+  const res = await fetch("/api/documents", { method: "POST", body: form });
+  if (!res.ok) throw new Error(await errorMessage(res, "Caricamento fallito"));
 }
 
 export async function listDocuments(): Promise<DocumentOut[]> {
-  const res = await fetch(`${API_BASE}/api/v1/documents`, {
-    headers: await authHeaders(),
-  });
-  if (!res.ok) throw new Error(`List failed: ${res.status}`);
+  const res = await fetch("/api/documents");
+  if (!res.ok) throw new Error(await errorMessage(res, "Lettura documenti fallita"));
   return res.json();
 }
