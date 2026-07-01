@@ -4,6 +4,7 @@
 
 import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
 import mammoth from "mammoth";
+import pdfParse from "pdf-parse";
 import * as XLSX from "xlsx";
 
 export interface Chunk {
@@ -45,25 +46,32 @@ export async function extractChunks(file: File): Promise<Chunk[]> {
   throw new Error("Formato non supportato. Carica un file PDF, DOCX o XLSX.");
 }
 
+// pdf-parse (pinned to the classic 1.x API) disables pdf.js web workers
+// internally, so it works in serverless Node.js without worker-thread setup.
+// `pagerender` is called once per page, in order, so we can capture text
+// per-page for citation purposes.
 async function chunkPdf(file: File): Promise<Chunk[]> {
-  // Dynamic import so Next.js doesn't bundle pdfjs-dist (serverExternalPackages).
-  // GlobalWorkerOptions.workerSrc = "" disables the web-worker (not needed in Node.js).
-  const { getDocument, GlobalWorkerOptions } = await import("pdfjs-dist");
-  GlobalWorkerOptions.workerSrc = "";
+  const buffer = Buffer.from(await file.arrayBuffer());
+  const pages: string[] = [];
 
-  const buffer = await file.arrayBuffer();
-  const pdf = await getDocument({ data: buffer }).promise;
+  await pdfParse(buffer, {
+    pagerender: (pageData) =>
+      pageData
+        .getTextContent({ normalizeWhitespace: false, disableCombineTextItems: false })
+        .then((tc: { items: Array<{ str?: string }> }) =>
+          tc.items.map((it) => it.str ?? "").join(" "),
+        )
+        .then((text: string) => {
+          pages.push(text);
+          return text;
+        }),
+  });
+
   const out: Chunk[] = [];
-
-  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-    const page = await pdf.getPage(pageNum);
-    const tc = await page.getTextContent();
-    const text = (tc.items as Array<{ str?: string }>)
-      .map((it) => it.str ?? "")
-      .join(" ");
-    for (const piece of await splitter.splitText(text)) {
+  for (let i = 0; i < pages.length; i++) {
+    for (const piece of await splitter.splitText(pages[i])) {
       const content = piece.trim();
-      if (content) out.push({ content, page: pageNum });
+      if (content) out.push({ content, page: i + 1 });
     }
   }
   return out;
